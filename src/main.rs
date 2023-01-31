@@ -23,7 +23,7 @@ async fn main() -> Result<(), eyre::Report> {
     let network_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
     let block_sync_params = config::BlockSynchronizerParameters::default();
     let mut consensus_api_grpc = config::ConsensusAPIGrpcParameters::default();
-    consensus_api_grpc.socket_addr = Multiaddr::from_str("/ip4/0.0.0.0/tcp/0/http").unwrap();
+    consensus_api_grpc.socket_addr = Multiaddr::from_str("/ip4/0.0.0.0/tcp/3001").unwrap();
     println!("grpc:{:?}", consensus_api_grpc);
     let prometheus_metrics = PrometheusMetricsParameters::default();
     let network_admin_server = NetworkAdminServerParameters::default();
@@ -101,6 +101,9 @@ async fn main() -> Result<(), eyre::Report> {
             Arc::new(SimpleExecutionState::new(_tx_transaction_confirmation)),
         )
         .await?;
+
+    primary.wait().await;
+    worker.wait().await;
 
     Ok(())
 }
