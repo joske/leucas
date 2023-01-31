@@ -137,6 +137,7 @@ async fn start_node(
     Ok((primary, worker))
 }
 
+/// create the `Committee` up front from the keys
 fn create_committee(
     primary_keys: &[BLS12381KeyPair],
     network_keys: &[Ed25519KeyPair],
@@ -160,6 +161,7 @@ fn create_committee(
     }
 }
 
+/// create the `WorkerCache` up front from the keys
 fn create_worker_cache(
     primary_keys: &[BLS12381KeyPair],
     worker_keys: &[Ed25519KeyPair],
