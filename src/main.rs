@@ -71,10 +71,12 @@ async fn main() -> Result<(), eyre::Report> {
 
     // create the committee
     let c = create_committee(&primary_keys, &network_keys);
+    debug!("committee : {:?}", c);
     let committee = Arc::new(ArcSwap::from_pointee(c));
 
     // create the worker cache
     let w = create_worker_cache(&primary_keys, &worker_keys);
+    debug!("worker cache: {:?}", w);
     let worker_cache = Arc::new(ArcSwap::from_pointee(w));
 
     for id in 0..NODES {
@@ -108,6 +110,7 @@ async fn start_node(
     committee: Arc<ArcSwap<Committee>>,
     worker_cache: Arc<ArcSwap<WorkerCache>>,
 ) -> Result<(PrimaryNode, WorkerNode), eyre::Report> {
+    debug!("starting node id {}", id);
     let (_tx_transaction_confirmation, _rx_transaction_confirmation) = channel(100);
 
     let worker = WorkerNode::new(id, parameters.clone(), registry_service.clone());
@@ -122,6 +125,7 @@ async fn start_node(
             None,
         )
         .await?;
+    debug!("created worker id {}", id);
 
     let primary = PrimaryNode::new(parameters.clone(), true, registry_service.clone());
 
@@ -135,6 +139,7 @@ async fn start_node(
             Arc::new(SimpleExecutionState::new(_tx_transaction_confirmation)),
         )
         .await?;
+    debug!("created primary id {}", id);
     Ok((primary, worker))
 }
 
