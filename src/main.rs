@@ -5,6 +5,7 @@ use config::{
 };
 use crypto::traits::KeyPair;
 use crypto::PublicKey;
+use fastcrypto::{bls12381::min_sig::BLS12381KeyPair, ed25519::Ed25519KeyPair};
 use multiaddr::Multiaddr;
 use mysten_metrics::RegistryService;
 use node::{
@@ -12,7 +13,6 @@ use node::{
     NodeStorage,
 };
 use prometheus::Registry;
-use store::Store;
 use std::{collections::BTreeMap, str::FromStr, sync::Arc, time::Duration};
 use sui_types::crypto::{get_key_pair_from_rng, AuthorityKeyPair, NetworkKeyPair};
 use tokio::sync::mpsc::channel;
@@ -69,35 +69,12 @@ async fn main() -> Result<(), eyre::Report> {
     };
 
     // create the committee
-    let mut authorities = BTreeMap::<PublicKey, Authority>::new();
-    let start_port = 3000usize;
-    for i in 0..NODES {
-        let addr = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
-        authorities.insert(
-            primary_keys.get(i).unwrap().public().clone(),
-            Authority {
-                stake: 1,
-                primary_address: Multiaddr::from_str(addr.as_str()).unwrap(),
-                network_key: network_keys.get(i).unwrap().public().clone(),
-            },
-        );
-    }
-    let epoch = 0;
-    let c = Committee { authorities, epoch };
+    let c = create_committee(&primary_keys, &network_keys);
     let committee = Arc::new(ArcSwap::from_pointee(c));
 
     // create the worker cache
-    let mut workers = BTreeMap::<PublicKey, WorkerIndex>::new();
-    let start_port = 3008usize;
-    for i in 0..NODES {
-        let transactions = format!("/ip4/127.0.0.1/tcp/{}/http", start_port + i + 1);
-        let worker = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
-        let mut worker_info = BTreeMap::<WorkerId, WorkerInfo>::new();
-        worker_info.insert(0, WorkerInfo {name: worker_keys.get(i).unwrap().public().clone(), transactions: Multiaddr::from_str(transactions.as_str()).unwrap(), worker_address: Multiaddr::from_str(worker.as_str()).unwrap()});
-        let worker_index = WorkerIndex(worker_info);
-        workers.insert(primary_keys.get(i).unwrap().public().clone(), worker_index);
-    }
-    let worker_cache = Arc::new(ArcSwap::from_pointee(WorkerCache { workers, epoch }));
+    let w = create_worker_cache(&primary_keys, &worker_keys);
+    let worker_cache = Arc::new(ArcSwap::from_pointee(w));
 
     for id in 0..NODES {
         let (primary, worker) = start_node(id as u32, primary_keys.remove(id), network_keys.remove(id), worker_keys.remove(id), parameters.clone(), store.clone(), registry_service.clone(), committee.clone(), worker_cache.clone()).await?;
@@ -137,4 +114,35 @@ async fn start_node(id: u32, primary_keypair: AuthorityKeyPair, network_keypair:
         )
         .await?;
     Ok((primary, worker))
+}
+
+fn create_committee(primary_keys: &Vec<BLS12381KeyPair>, network_keys: &Vec<Ed25519KeyPair>) -> Committee {
+    let mut authorities = BTreeMap::<PublicKey, Authority>::new();
+    let start_port = 3000usize;
+    for i in 0..NODES {
+        let addr = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
+        authorities.insert(
+            primary_keys.get(i).unwrap().public().clone(),
+            Authority {
+                stake: 1,
+                primary_address: Multiaddr::from_str(addr.as_str()).unwrap(),
+                network_key: network_keys.get(i).unwrap().public().clone(),
+            },
+        );
+    }
+    Committee { authorities, epoch: 0 }
+}
+
+fn create_worker_cache(primary_keys: &Vec<BLS12381KeyPair>, worker_keys: &Vec<Ed25519KeyPair>) -> WorkerCache {
+    let mut workers = BTreeMap::<PublicKey, WorkerIndex>::new();
+    let start_port = 3008usize;
+    for i in 0..NODES {
+        let transactions = format!("/ip4/127.0.0.1/tcp/{}/http", start_port + i + 1);
+        let worker = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
+        let mut worker_info = BTreeMap::<WorkerId, WorkerInfo>::new();
+        worker_info.insert(0, WorkerInfo {name: worker_keys.get(i).unwrap().public().clone(), transactions: Multiaddr::from_str(transactions.as_str()).unwrap(), worker_address: Multiaddr::from_str(worker.as_str()).unwrap()});
+        let worker_index = WorkerIndex(worker_info);
+        workers.insert(primary_keys.get(i).unwrap().public().clone(), worker_index);
+    }
+    WorkerCache { workers, epoch: 0 }
 }
