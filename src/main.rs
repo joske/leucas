@@ -24,7 +24,6 @@ async fn main() -> Result<(), eyre::Report> {
     let block_sync_params = config::BlockSynchronizerParameters::default();
     let mut consensus_api_grpc = config::ConsensusAPIGrpcParameters::default();
     consensus_api_grpc.socket_addr = Multiaddr::from_str("/ip4/0.0.0.0/tcp/3001").unwrap();
-    println!("grpc:{:?}", consensus_api_grpc);
     let prometheus_metrics = PrometheusMetricsParameters::default();
     let network_admin_server = NetworkAdminServerParameters::default();
     let anemo = AnemoParameters::default();
