@@ -12,18 +12,22 @@ use node::{
     NodeStorage,
 };
 use prometheus::Registry;
+use store::Store;
 use std::{collections::BTreeMap, str::FromStr, sync::Arc, time::Duration};
 use sui_types::crypto::{get_key_pair_from_rng, AuthorityKeyPair, NetworkKeyPair};
 use tokio::sync::mpsc::channel;
 use worker::TrivialTransactionValidator;
 
+const NODES: usize = 4;
+
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
-    let primary_keypair: AuthorityKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
-    let network_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
     let block_sync_params = config::BlockSynchronizerParameters::default();
-    let mut consensus_api_grpc = config::ConsensusAPIGrpcParameters::default();
-    consensus_api_grpc.socket_addr = Multiaddr::from_str("/ip4/0.0.0.0/tcp/3001").unwrap();
+    let consensus_api_grpc = config::ConsensusAPIGrpcParameters {
+        socket_addr : Multiaddr::from_str("/ip4/0.0.0.0/tcp/0/http").unwrap(),
+        get_collections_timeout: Duration::from_secs(5000),
+        remove_collections_timeout: Duration::from_secs(5000),
+    };
     let prometheus_metrics = PrometheusMetricsParameters::default();
     let network_admin_server = NetworkAdminServerParameters::default();
     let anemo = AnemoParameters::default();
@@ -46,36 +50,68 @@ async fn main() -> Result<(), eyre::Report> {
     let registry_service = RegistryService::new(Registry::new());
 
     let store_path = "store";
+    let store = NodeStorage::reopen(store_path);
 
+    let mut primary_keys = Vec::new();
+    for _ in 0..NODES {
+        let primary_keypair: AuthorityKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
+        primary_keys.push(primary_keypair);
+    };
+    let mut network_keys = Vec::new();
+    for _ in 0..NODES {
+        let network_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
+        network_keys.push(network_keypair);
+    };
+    let mut worker_keys = Vec::new();
+    for _ in 0..NODES {
+        let worker_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
+        worker_keys.push(worker_keypair);
+    };
+
+    // create the committee
     let mut authorities = BTreeMap::<PublicKey, Authority>::new();
-    authorities.insert(
-        primary_keypair.public().clone(),
-        Authority {
-            stake: 1,
-            primary_address: Multiaddr::from_str("/ip4/127.0.0.1/udp/3001").unwrap(),
-            network_key: network_keypair.public().clone(),
-        },
-    );
-    let epoch = 1;
+    let start_port = 3000usize;
+    for i in 0..NODES {
+        let addr = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
+        authorities.insert(
+            primary_keys.get(i).unwrap().public().clone(),
+            Authority {
+                stake: 1,
+                primary_address: Multiaddr::from_str(addr.as_str()).unwrap(),
+                network_key: network_keys.get(i).unwrap().public().clone(),
+            },
+        );
+    }
+    let epoch = 0;
     let c = Committee { authorities, epoch };
     let committee = Arc::new(ArcSwap::from_pointee(c));
+
+    // create the worker cache
     let mut workers = BTreeMap::<PublicKey, WorkerIndex>::new();
-
-
-    let store = NodeStorage::reopen(store_path);
-    let (_tx_transaction_confirmation, _rx_transaction_confirmation) = channel(100);
-
-    let id = 0;
-    let worker_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
-    let worker = WorkerNode::new(id, parameters.clone(), registry_service.clone());
-
-    let mut worker_info = BTreeMap::<WorkerId, WorkerInfo>::new();
-    worker_info.insert(0, WorkerInfo {name: worker_keypair.public().clone(), transactions: Multiaddr::from_str("/ip4/127.0.0.1/tcp/3011").unwrap(), worker_address: Multiaddr::from_str("/ip4/127.0.0.1/udp/3010").unwrap()});
-    let worker_index = WorkerIndex(worker_info);
-    workers.insert(primary_keypair.public().clone(), worker_index);
-
+    let start_port = 3008usize;
+    for i in 0..NODES {
+        let transactions = format!("/ip4/127.0.0.1/tcp/{}/http", start_port + i + 1);
+        let worker = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
+        let mut worker_info = BTreeMap::<WorkerId, WorkerInfo>::new();
+        worker_info.insert(0, WorkerInfo {name: worker_keys.get(i).unwrap().public().clone(), transactions: Multiaddr::from_str(transactions.as_str()).unwrap(), worker_address: Multiaddr::from_str(worker.as_str()).unwrap()});
+        let worker_index = WorkerIndex(worker_info);
+        workers.insert(primary_keys.get(i).unwrap().public().clone(), worker_index);
+    }
     let worker_cache = Arc::new(ArcSwap::from_pointee(WorkerCache { workers, epoch }));
 
+    for id in 0..NODES {
+        let (primary, worker) = start_node(id as u32, primary_keys.remove(id), network_keys.remove(id), worker_keys.remove(id), parameters.clone(), store.clone(), registry_service.clone(), committee.clone(), worker_cache.clone()).await?;
+        primary.wait().await;
+        worker.wait().await;
+    }
+
+    Ok(())
+}
+
+async fn start_node(id: u32, primary_keypair: AuthorityKeyPair, network_keypair: NetworkKeyPair, worker_keypair: NetworkKeyPair, parameters: Parameters, store: NodeStorage, registry_service: RegistryService, committee: Arc<ArcSwap<Committee>>, worker_cache: Arc<ArcSwap<WorkerCache>>) -> Result<(PrimaryNode, WorkerNode), eyre::Report> {
+    let (_tx_transaction_confirmation, _rx_transaction_confirmation) = channel(100);
+
+    let worker = WorkerNode::new(id, parameters.clone(), registry_service.clone());
     worker
         .start(
             primary_keypair.public().clone(),
@@ -100,9 +136,5 @@ async fn main() -> Result<(), eyre::Report> {
             Arc::new(SimpleExecutionState::new(_tx_transaction_confirmation)),
         )
         .await?;
-
-    primary.wait().await;
-    worker.wait().await;
-
-    Ok(())
+    Ok((primary, worker))
 }
