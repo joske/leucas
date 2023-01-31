@@ -22,6 +22,7 @@ const NODES: usize = 4;
 
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
+    tracing_subscriber::fmt::init();
     let block_sync_params = config::BlockSynchronizerParameters::default();
     let consensus_api_grpc = config::ConsensusAPIGrpcParameters {
         socket_addr: Multiaddr::from_str("/ip4/0.0.0.0/tcp/0/http").unwrap(),
@@ -122,7 +123,7 @@ async fn start_node(
         )
         .await?;
 
-    let primary = PrimaryNode::new(parameters.clone(), false, registry_service.clone());
+    let primary = PrimaryNode::new(parameters.clone(), true, registry_service.clone());
 
     primary
         .start(

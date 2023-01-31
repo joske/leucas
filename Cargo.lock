@@ -4011,6 +4011,7 @@ dependencies = [
  "tonic",
  "tower",
  "tracing",
+ "tracing-subscriber 0.3.16",
  "typed-store",
 ]
 
