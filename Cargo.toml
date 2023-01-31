@@ -1,0 +1,56 @@
+[package]
+name = "leucas"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+config = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-config" }
+storage = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-storage" }
+node = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-node" }
+store = { git = "https://github.com/MystenLabs/sui/", package = "typed-store" }
+types = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-types" }
+crypto = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-crypto" }
+primary = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-primary" }
+worker = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-worker" }
+consensus = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-consensus" }
+test-utils = { git = "https://github.com/MystenLabs/sui/", package = "narwhal-test-utils" }
+mysten-metrics = { git = "https://github.com/MystenLabs/sui/" }
+sui-types = { git = "https://github.com/MystenLabs/sui/" }
+
+anyhow = "1.0.65"
+arc-swap = "1.5.1"
+async-recursion = "1.0.0"
+async-trait = "0.1.61"
+backoff = { version = "0.4", features = ["futures", "futures-core", "pin-project-lite", "tokio", "tokio_1"] }
+base64 = "0.13.0"
+bincode = "1.3.3"
+bytes = "1.3.0"
+dashmap = "5.4.0"
+derive_builder = "0.12.0"
+futures = "0.3.24"
+governor = "0.5.1"
+itertools = "0.10.5"
+multiaddr = "0.17.0"
+once_cell = "1.16"
+prometheus = "0.13.3"
+prost = "0.11.3"
+rand = { version = "0.8.5", features = ["small_rng"] }
+roaring = "0.10.1"
+serde = { version = "1.0.144", features = ["derive"] }
+thiserror = "1.0.35"
+tokio = { version = "1.24.1", features = ["sync", "rt", "macros", "time", "test-util", "tokio-macros"] }
+tokio-util = { version = "0.7.4", features = ["codec"] }
+tonic = "0.8.2"
+tower = { version = "0.4.13", features = ["full"] }
+tracing = "0.1.36"
+tap = "1.0.1"
+reqwest = { version = "0.11.13", features = ["json"] }
+eyre = "0.6.8"
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "f451422b7f15e75e055a1830cbe5d1547fa87b74" }
+fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "f451422b7f15e75e055a1830cbe5d1547fa87b74", package = "fastcrypto-zkp" }
+fastcrypto-tbls = { git = "https://github.com/MystenLabs/fastcrypto", rev = "f451422b7f15e75e055a1830cbe5d1547fa87b74", package = "fastcrypto-tbls" }
+
+# anemo dependencies
+anemo = { git = "https://github.com/mystenlabs/anemo.git", rev = "0e0ef7054082a6f5a8921688e3d568761bc3be21" }
+anemo-build = { git = "https://github.com/mystenlabs/anemo.git", rev = "0e0ef7054082a6f5a8921688e3d568761bc3be21" }
+anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "0e0ef7054082a6f5a8921688e3d568761bc3be21" }
