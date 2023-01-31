@@ -138,8 +138,8 @@ async fn start_node(
 }
 
 fn create_committee(
-    primary_keys: &Vec<BLS12381KeyPair>,
-    network_keys: &Vec<Ed25519KeyPair>,
+    primary_keys: &[BLS12381KeyPair],
+    network_keys: &[Ed25519KeyPair],
 ) -> Committee {
     let mut authorities = BTreeMap::<PublicKey, Authority>::new();
     let start_port = 3000usize;
@@ -161,8 +161,8 @@ fn create_committee(
 }
 
 fn create_worker_cache(
-    primary_keys: &Vec<BLS12381KeyPair>,
-    worker_keys: &Vec<Ed25519KeyPair>,
+    primary_keys: &[BLS12381KeyPair],
+    worker_keys: &[Ed25519KeyPair],
 ) -> WorkerCache {
     let mut workers = BTreeMap::<PublicKey, WorkerIndex>::new();
     let start_port = 3008usize;
