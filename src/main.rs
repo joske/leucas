@@ -10,12 +10,13 @@ use multiaddr::Multiaddr;
 use mysten_metrics::RegistryService;
 use node::{
     execution_state::SimpleExecutionState, primary_node::PrimaryNode, worker_node::WorkerNode,
-    NodeStorage,
+    NodeStorage, metrics::{start_prometheus_server, primary_metrics_registry, worker_metrics_registry},
 };
 use prometheus::Registry;
 use std::{collections::BTreeMap, str::FromStr, sync::Arc, time::Duration};
 use sui_types::crypto::{get_key_pair_from_rng, AuthorityKeyPair, NetworkKeyPair};
-use tokio::sync::mpsc::channel;
+use tokio::{sync::mpsc::channel, task::JoinHandle};
+use tracing::debug;
 use worker::TrivialTransactionValidator;
 
 const NODES: usize = 4;
@@ -29,8 +30,13 @@ async fn main() -> Result<(), eyre::Report> {
         get_collections_timeout: Duration::from_secs(5000),
         remove_collections_timeout: Duration::from_secs(5000),
     };
-    let prometheus_metrics = PrometheusMetricsParameters::default();
-    let network_admin_server = NetworkAdminServerParameters::default();
+    let prometheus_metrics = PrometheusMetricsParameters {
+        socket_addr: Multiaddr::from_str("/ip4/0.0.0.0/tcp/0/http").unwrap(),
+    };
+    let network_admin_server = NetworkAdminServerParameters {
+        primary_network_admin_server_port: 0,
+        worker_network_admin_server_base_port: 0,
+    };
     let anemo = AnemoParameters::default();
     let parameters = Parameters {
         header_num_of_batches_threshold: 32,
@@ -48,7 +54,7 @@ async fn main() -> Result<(), eyre::Report> {
         network_admin_server,
         anemo,
     };
-    let registry_service = RegistryService::new(Registry::new());
+    debug!("parameters: {:?}", parameters);
 
     let store_path = "store";
     let store = NodeStorage::reopen(store_path);
@@ -79,21 +85,35 @@ async fn main() -> Result<(), eyre::Report> {
     debug!("worker cache: {:?}", w);
     let worker_cache = Arc::new(ArcSwap::from_pointee(w));
 
+    let mut handles : Vec<JoinHandle<()>> = Vec::new();
     for id in 0..NODES {
-        let (primary, worker) = start_node(
-            id as u32,
-            primary_keys.remove(id),
-            network_keys.remove(id),
-            worker_keys.remove(id),
-            parameters.clone(),
-            store.clone(),
-            registry_service.clone(),
-            committee.clone(),
-            worker_cache.clone(),
-        )
-        .await?;
-        primary.wait().await;
-        worker.wait().await;
+        debug!("creating task {}", id);
+        let p = parameters.clone();
+        let pk = primary_keys.remove(0);
+        let nk = network_keys.remove(0);
+        let wk = worker_keys.remove(0);
+        let s = store.clone();
+        let c = committee.clone();
+        let wc = worker_cache.clone();
+        let h = tokio::spawn(async move {
+            let (primary, worker) = start_node(
+                id as u32,
+                pk,
+                nk,
+                wk,
+                p,
+                s,
+                c,
+                wc,
+            )
+            .await.unwrap();
+            primary.wait().await;
+            worker.wait().await;
+        });
+        handles.push(h);
+    }
+    for h in handles {
+        h.await?;
     }
 
     Ok(())
@@ -106,29 +126,15 @@ async fn start_node(
     worker_keypair: NetworkKeyPair,
     parameters: Parameters,
     store: NodeStorage,
-    registry_service: RegistryService,
     committee: Arc<ArcSwap<Committee>>,
     worker_cache: Arc<ArcSwap<WorkerCache>>,
 ) -> Result<(PrimaryNode, WorkerNode), eyre::Report> {
     debug!("starting node id {}", id);
     let (_tx_transaction_confirmation, _rx_transaction_confirmation) = channel(100);
 
-    let worker = WorkerNode::new(id, parameters.clone(), registry_service.clone());
-    worker
-        .start(
-            primary_keypair.public().clone(),
-            worker_keypair,
-            committee.clone(),
-            worker_cache.clone(),
-            &store,
-            TrivialTransactionValidator::default(),
-            None,
-        )
-        .await?;
-    debug!("created worker id {}", id);
-
-    let primary = PrimaryNode::new(parameters.clone(), true, registry_service.clone());
-
+    let registry_service = RegistryService::new(Registry::new());
+    let primary_pub = primary_keypair.public().clone();
+    let primary = PrimaryNode::new(parameters.clone(), true, registry_service);
     primary
         .start(
             primary_keypair,
@@ -140,6 +146,26 @@ async fn start_node(
         )
         .await?;
     debug!("created primary id {}", id);
+
+    let registry_service = RegistryService::new(Registry::new());
+    let worker = WorkerNode::new(0, parameters.clone(), registry_service);
+    worker
+        .start(
+            primary_pub.clone(),
+            worker_keypair,
+            committee.clone(),
+            worker_cache,
+            &store,
+            TrivialTransactionValidator::default(),
+            None,
+        )
+        .await?;
+    debug!("created worker id {}", id);
+    let worker_registry = worker_metrics_registry(0, primary_pub.clone());
+    let _metrics_server_handle = start_prometheus_server(parameters.prometheus_metrics.socket_addr.clone(), &worker_registry);
+    let primary_registry = primary_metrics_registry(primary_pub);
+    let _metrics_server_handle = start_prometheus_server(parameters.prometheus_metrics.socket_addr, &primary_registry);
+
     Ok((primary, worker))
 }
 
@@ -173,10 +199,12 @@ fn create_worker_cache(
     worker_keys: &[Ed25519KeyPair],
 ) -> WorkerCache {
     let mut workers = BTreeMap::<PublicKey, WorkerIndex>::new();
-    let start_port = 3008usize;
+    let mut port = 3008usize;
     for i in 0..NODES {
-        let transactions = format!("/ip4/127.0.0.1/tcp/{}/http", start_port + i + 1);
-        let worker = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
+        let worker = format!("/ip4/127.0.0.1/udp/{}", port);
+        port += 1; 
+        let transactions = format!("/ip4/127.0.0.1/tcp/{}/http", port);
+        port += 1; 
         let mut worker_info = BTreeMap::<WorkerId, WorkerInfo>::new();
         worker_info.insert(
             0,
