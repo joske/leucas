@@ -1,31 +1,28 @@
 use arc_swap::ArcSwap;
 use config::{
-    AnemoParameters, Authority, Committee, Import, NetworkAdminServerParameters, Parameters,
-    PrometheusMetricsParameters, WorkerCache, WorkerId, WorkerIndex, WorkerInfo,
+    Committee, Import, Parameters, WorkerCache,
 };
 use crypto::traits::KeyPair;
-use crypto::PublicKey;
+
 use eyre::Context;
 use fastcrypto::{
-    bls12381::min_sig::BLS12381KeyPair, ed25519::Ed25519KeyPair, traits::ToFromBytes,
+    traits::ToFromBytes,
 };
-use multiaddr::Multiaddr;
+
 use mysten_metrics::RegistryService;
 use node::{
     execution_state::SimpleExecutionState,
-    metrics::{primary_metrics_registry, start_prometheus_server, worker_metrics_registry},
     primary_node::PrimaryNode,
     worker_node::WorkerNode,
     NodeStorage,
 };
 use prometheus::Registry;
-use std::{collections::BTreeMap, str::FromStr, sync::Arc, time::Duration};
+use std::{sync::Arc};
 use sui_keys::keypair_file::{read_authority_keypair_from_file, read_network_keypair_from_file};
 use sui_types::{
-    committee,
-    crypto::{get_key_pair_from_rng, AuthorityKeyPair, NetworkKeyPair},
+    crypto::{AuthorityKeyPair},
 };
-use tokio::{sync::mpsc::channel, task::JoinHandle};
+use tokio::{sync::mpsc::channel};
 use tracing::debug;
 use worker::TrivialTransactionValidator;
 
