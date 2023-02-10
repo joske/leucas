@@ -1,221 +1,114 @@
 use arc_swap::ArcSwap;
 use config::{
-    AnemoParameters, Authority, Committee, NetworkAdminServerParameters, Parameters,
+    AnemoParameters, Authority, Committee, Import, NetworkAdminServerParameters, Parameters,
     PrometheusMetricsParameters, WorkerCache, WorkerId, WorkerIndex, WorkerInfo,
 };
 use crypto::traits::KeyPair;
 use crypto::PublicKey;
-use fastcrypto::{bls12381::min_sig::BLS12381KeyPair, ed25519::Ed25519KeyPair};
+use eyre::Context;
+use fastcrypto::{
+    bls12381::min_sig::BLS12381KeyPair, ed25519::Ed25519KeyPair, traits::ToFromBytes,
+};
 use multiaddr::Multiaddr;
 use mysten_metrics::RegistryService;
 use node::{
-    execution_state::SimpleExecutionState, primary_node::PrimaryNode, worker_node::WorkerNode,
-    NodeStorage, metrics::{start_prometheus_server, primary_metrics_registry, worker_metrics_registry},
+    execution_state::SimpleExecutionState,
+    metrics::{primary_metrics_registry, start_prometheus_server, worker_metrics_registry},
+    primary_node::PrimaryNode,
+    worker_node::WorkerNode,
+    NodeStorage,
 };
 use prometheus::Registry;
 use std::{collections::BTreeMap, str::FromStr, sync::Arc, time::Duration};
-use sui_types::crypto::{get_key_pair_from_rng, AuthorityKeyPair, NetworkKeyPair};
+use sui_keys::keypair_file::{read_authority_keypair_from_file, read_network_keypair_from_file};
+use sui_types::{
+    committee,
+    crypto::{get_key_pair_from_rng, AuthorityKeyPair, NetworkKeyPair},
+};
 use tokio::{sync::mpsc::channel, task::JoinHandle};
 use tracing::debug;
 use worker::TrivialTransactionValidator;
 
-const NODES: usize = 4;
-
 #[tokio::main]
 async fn main() -> Result<(), eyre::Report> {
     tracing_subscriber::fmt::init();
-    let block_sync_params = config::BlockSynchronizerParameters::default();
-    let consensus_api_grpc = config::ConsensusAPIGrpcParameters {
-        socket_addr: Multiaddr::from_str("/ip4/0.0.0.0/tcp/0/http").unwrap(),
-        get_collections_timeout: Duration::from_secs(5000),
-        remove_collections_timeout: Duration::from_secs(5000),
-    };
-    let prometheus_metrics = PrometheusMetricsParameters {
-        socket_addr: Multiaddr::from_str("/ip4/0.0.0.0/tcp/0/http").unwrap(),
-    };
-    let network_admin_server = NetworkAdminServerParameters {
-        primary_network_admin_server_port: 0,
-        worker_network_admin_server_base_port: 0,
-    };
-    let anemo = AnemoParameters::default();
-    let parameters = Parameters {
-        header_num_of_batches_threshold: 32,
-        max_header_num_of_batches: 1000,
-        max_header_delay: Duration::from_secs(2),
-        gc_depth: 10,
-        sync_retry_delay: Duration::from_secs(10),
-        sync_retry_nodes: 3,
-        batch_size: 5,
-        max_batch_delay: Duration::from_millis(200),
-        block_synchronizer: block_sync_params,
-        consensus_api_grpc,
-        max_concurrent_requests: 5,
-        prometheus_metrics,
-        network_admin_server,
-        anemo,
-    };
-    debug!("parameters: {:?}", parameters);
+    let args: Vec<String> = std::env::args().collect();
+    let id: u32 = args.get(1).unwrap().parse().unwrap();
+    let primary_key_file = format!(".primary-{id}-key.json");
+    let primary_keypair = read_authority_keypair_from_file(primary_key_file)
+        .expect("Failed to load the node's primary keypair");
+    let primary_network_key_file = format!(".primary-{id}-network-key.json");
+    let primary_network_keypair = read_network_keypair_from_file(primary_network_key_file)
+        .expect("Failed to load the node's primary network keypair");
+    let worker_key_file = format!(".worker-{id}-key.json");
+    let worker_keypair = read_network_keypair_from_file(worker_key_file)
+        .expect("Failed to load the node's worker keypair");
+    debug!("creating task {}", id);
+    // Read the committee, workers and node's keypair from file.
+    let committee_file = ".committee.json";
+    let committee = Arc::new(ArcSwap::from_pointee(
+        Committee::import(committee_file).context("Failed to load the committee information")?,
+    ));
+    let workers_file = ".workers.json";
+    let worker_cache = Arc::new(ArcSwap::from_pointee(
+        WorkerCache::import(workers_file).context("Failed to load the worker information")?,
+    ));
 
-    let store_path = "store";
+    // Load default parameters if none are specified.
+    let filename = ".parameters.json";
+    let parameters =
+        Parameters::import(filename).context("Failed to load the node's parameters")?;
+
+    // Make the data store.
+    let store_path = format!(".db-{id}-key.json");
     let store = NodeStorage::reopen(store_path);
 
-    let mut primary_keys = Vec::new();
-    for _ in 0..NODES {
-        let primary_keypair: AuthorityKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
-        primary_keys.push(primary_keypair);
-    }
-    let mut network_keys = Vec::new();
-    for _ in 0..NODES {
-        let network_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
-        network_keys.push(network_keypair);
-    }
-    let mut worker_keys = Vec::new();
-    for _ in 0..NODES {
-        let worker_keypair: NetworkKeyPair = get_key_pair_from_rng(&mut rand::rngs::OsRng).1;
-        worker_keys.push(worker_keypair);
-    }
-
-    // create the committee
-    let c = create_committee(&primary_keys, &network_keys);
-    debug!("committee : {:?}", c);
-    let committee = Arc::new(ArcSwap::from_pointee(c));
-
-    // create the worker cache
-    let w = create_worker_cache(&primary_keys, &worker_keys);
-    debug!("worker cache: {:?}", w);
-    let worker_cache = Arc::new(ArcSwap::from_pointee(w));
-
-    let mut handles : Vec<JoinHandle<()>> = Vec::new();
-    for id in 0..NODES {
-        debug!("creating task {}", id);
-        let p = parameters.clone();
-        let pk = primary_keys.remove(0);
-        let nk = network_keys.remove(0);
-        let wk = worker_keys.remove(0);
-        let s = store.clone();
-        let c = committee.clone();
-        let wc = worker_cache.clone();
-        let h = tokio::spawn(async move {
-            let (primary, worker) = start_node(
-                id as u32,
-                pk,
-                nk,
-                wk,
-                p,
-                s,
-                c,
-                wc,
-            )
-            .await.unwrap();
-            primary.wait().await;
-            worker.wait().await;
-        });
-        handles.push(h);
-    }
-    for h in handles {
-        h.await?;
-    }
-
-    Ok(())
-}
-
-async fn start_node(
-    id: u32,
-    primary_keypair: AuthorityKeyPair,
-    network_keypair: NetworkKeyPair,
-    worker_keypair: NetworkKeyPair,
-    parameters: Parameters,
-    store: NodeStorage,
-    committee: Arc<ArcSwap<Committee>>,
-    worker_cache: Arc<ArcSwap<WorkerCache>>,
-) -> Result<(PrimaryNode, WorkerNode), eyre::Report> {
-    debug!("starting node id {}", id);
+    // The channel returning the result for each transaction's execution.
     let (_tx_transaction_confirmation, _rx_transaction_confirmation) = channel(100);
 
     let registry_service = RegistryService::new(Registry::new());
-    let primary_pub = primary_keypair.public().clone();
-    let primary = PrimaryNode::new(parameters.clone(), true, registry_service);
-    primary
-        .start(
-            primary_keypair,
-            network_keypair,
-            committee.clone(),
-            worker_cache.clone(),
-            &store,
-            Arc::new(SimpleExecutionState::new(_tx_transaction_confirmation)),
-        )
-        .await?;
-    debug!("created primary id {}", id);
 
-    let registry_service = RegistryService::new(Registry::new());
-    let worker = WorkerNode::new(0, parameters.clone(), registry_service);
-    worker
-        .start(
-            primary_pub.clone(),
-            worker_keypair,
-            committee.clone(),
-            worker_cache,
-            &store,
-            TrivialTransactionValidator::default(),
-            None,
-        )
-        .await?;
-    debug!("created worker id {}", id);
-    let worker_registry = worker_metrics_registry(0, primary_pub.clone());
-    let _metrics_server_handle = start_prometheus_server(parameters.prometheus_metrics.socket_addr.clone(), &worker_registry);
-    let primary_registry = primary_metrics_registry(primary_pub);
-    let _metrics_server_handle = start_prometheus_server(parameters.prometheus_metrics.socket_addr, &primary_registry);
+    let primary = PrimaryNode::new(parameters.clone(), true, registry_service.clone());
+    let worker = WorkerNode::new(id, parameters, registry_service);
+    let primary_keypair_clone: AuthorityKeyPair =
+        AuthorityKeyPair::from_bytes(primary_keypair.as_bytes()).unwrap();
+    let committee_clone = committee.clone();
+    let worker_cache_clone = worker_cache.clone();
+    let store_clone = store.clone();
+    tokio::spawn(async move {
+        primary
+            .start(
+                primary_keypair,
+                primary_network_keypair,
+                committee,
+                worker_cache,
+                &store,
+                Arc::new(SimpleExecutionState::new(_tx_transaction_confirmation)),
+            )
+            .await
+            .unwrap();
+        primary.wait().await;
+    })
+    .await
+    .ok();
 
-    Ok((primary, worker))
-}
+    tokio::spawn(async move {
+        worker
+            .start(
+                primary_keypair_clone.public().clone(),
+                worker_keypair,
+                committee_clone,
+                worker_cache_clone,
+                &store_clone,
+                TrivialTransactionValidator::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        worker.wait().await;
+    })
+    .await
+    .ok();
 
-/// create the `Committee` up front from the keys
-fn create_committee(
-    primary_keys: &[BLS12381KeyPair],
-    network_keys: &[Ed25519KeyPair],
-) -> Committee {
-    let mut authorities = BTreeMap::<PublicKey, Authority>::new();
-    let start_port = 3000usize;
-    for i in 0..NODES {
-        let addr = format!("/ip4/127.0.0.1/udp/{}", start_port + i);
-        authorities.insert(
-            primary_keys.get(i).unwrap().public().clone(),
-            Authority {
-                stake: 1,
-                primary_address: Multiaddr::from_str(addr.as_str()).unwrap(),
-                network_key: network_keys.get(i).unwrap().public().clone(),
-            },
-        );
-    }
-    Committee {
-        authorities,
-        epoch: 0,
-    }
-}
-
-/// create the `WorkerCache` up front from the keys
-fn create_worker_cache(
-    primary_keys: &[BLS12381KeyPair],
-    worker_keys: &[Ed25519KeyPair],
-) -> WorkerCache {
-    let mut workers = BTreeMap::<PublicKey, WorkerIndex>::new();
-    let mut port = 3008usize;
-    for i in 0..NODES {
-        let worker = format!("/ip4/127.0.0.1/udp/{}", port);
-        port += 1; 
-        let transactions = format!("/ip4/127.0.0.1/tcp/{}/http", port);
-        port += 1; 
-        let mut worker_info = BTreeMap::<WorkerId, WorkerInfo>::new();
-        worker_info.insert(
-            0,
-            WorkerInfo {
-                name: worker_keys.get(i).unwrap().public().clone(),
-                transactions: Multiaddr::from_str(transactions.as_str()).unwrap(),
-                worker_address: Multiaddr::from_str(worker.as_str()).unwrap(),
-            },
-        );
-        let worker_index = WorkerIndex(worker_info);
-        workers.insert(primary_keys.get(i).unwrap().public().clone(), worker_index);
-    }
-    WorkerCache { workers, epoch: 0 }
+    Ok(())
 }
